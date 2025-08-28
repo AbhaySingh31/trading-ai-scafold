@@ -1,0 +1,15 @@
+README.md
+pyproject.toml
+src/trading_ai/__init__.py
+src/trading_ai.egg-info/PKG-INFO
+src/trading_ai.egg-info/SOURCES.txt
+src/trading_ai.egg-info/dependency_links.txt
+src/trading_ai.egg-info/requires.txt
+src/trading_ai.egg-info/top_level.txt
+src/trading_ai/cli/replay.py
+src/trading_ai/data/loader.py
+src/trading_ai/indicators/core.py
+src/trading_ai/journal/io.py
+src/trading_ai/llm/interface.py
+src/trading_ai/rules/filters.py
+tests/test_placeholders.py
