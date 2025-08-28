@@ -13,7 +13,7 @@ def run(args: argparse.Namespace) -> None:
     df["symbol"] = args.symbol
     df["timeframe"] = args.timeframe
 
-    # Keep only market hours (IST 09:15â€“15:30 by default inside helper)
+    # Keep only market hours (IST 09:15–15:30 by default inside helper)
     df = enforce_market_hours(df)
 
     # Compute indicators locally
@@ -88,7 +88,7 @@ def run(args: argparse.Namespace) -> None:
             header=["timestamp","symbol","timeframe","action","entry","stop_loss","t1","t2","confidence","notes"],
         )
 
-    print(f"Signals: {len(signals)} | Trades: {len(trades)}\nSaved -> {args.signals_out} , {args.trades_out}")
+    print(f"Signals: {len(signals)} | Trades: {len(trades)}\\nSaved -> {args.signals_out} , {args.trades_out}")
 
 def main():
     p = argparse.ArgumentParser(description="Replay candles -> signals -> stub trades")
