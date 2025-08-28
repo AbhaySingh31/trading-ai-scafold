@@ -1,2 +1,5 @@
 *.pyc
 .pyc
+.csv
+*.csv
+*.json
