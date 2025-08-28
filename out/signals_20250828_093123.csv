@@ -1,0 +1,2 @@
+timestamp,symbol,timeframe,price,rsi,macd_state,ema20_vs_ema50,bands_position,volume_multiple,atr,context,key_levels
+2025-08-21 08:20:00+00:00,BANKNIFTY,5m,44814.81,56.27629832360945,bull,down,above,1.9475803595106027,30.415714285714266,momentum,"{'support': 44757.5395, 'resistance': 44784.86949999999}"

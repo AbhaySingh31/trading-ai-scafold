@@ -1,0 +1,2 @@
+timestamp,symbol,timeframe,action,entry,stop_loss,t1,t2,confidence,notes,qty,risk_per_unit,max_risk,point_value,capital,risk_pct,entry_filled,entry_time,exit_price,exit_time,pnl,R,status,pnl_money
+2025-08-21 08:20:00+00:00,BANKNIFTY,5m,BUY,44814.81,44723.56285714285,44860.43357142857,44906.05714285714,0.6,stub model,54,91.25,4927.35,1.0,1000000.0,0.005,44815.43,2025-08-21 08:25:00+00:00,44860.43,2025-08-21 08:30:00+00:00,45.0,0.49,TP1_HIT,2430.19

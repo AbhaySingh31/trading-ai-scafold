@@ -1,0 +1,11 @@
+{
+  "trades": 1,
+  "wins": 1,
+  "losses": 0,
+  "breakeven": 0,
+  "win_rate_pct": 100.0,
+  "total_R": 1.155,
+  "avg_R": 1.155,
+  "profit_factor": "inf",
+  "max_drawdown_R": 0.0
+}

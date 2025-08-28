@@ -1,0 +1,2 @@
+timestamp,symbol,timeframe,action,entry,stop_loss,t1,t2,confidence,notes,entry_filled,entry_time,exit_price,exit_time,pnl,R,status
+2025-08-21 08:20:00+00:00,BANKNIFTY,5m,BUY,44814.81,44725.18,44949.25,45038.88,0.6,stub model,44815.43,2025-08-21 08:25:00+00:00,44919.71,2025-08-21 10:00:00+00:00,104.28,1.155,TIMEOUT
