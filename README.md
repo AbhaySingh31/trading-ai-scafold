@@ -71,3 +71,10 @@ data/                   # sample CSVs
 
 ## Next
 - Fill in indicator calculations (pandas-ta), add rule thresholds, run the replay on sample data.
+
+
+## New CLI flags (v0.2)
+- `--rsi-oversold` (default 30.0)
+- `--volume-multiple` (default 1.5)
+- `--cooldown` (bars, default 10)
+- `--dump-indicators <path>` to export indicators for inspection
