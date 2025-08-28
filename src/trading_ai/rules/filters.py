@@ -82,3 +82,32 @@ def detect_setups(df: pd.DataFrame, cfg: TriggerConfig) -> List[Dict[str, Any]]:
             last_signal_idx = i
 
     return signals
+
+
+
+def explain_bar(df_row, vol_mult_value, cfg: TriggerConfig):
+    # Booleans for each condition we use
+    rsi_ok = (df_row.get("rsi") is not None) and (df_row["rsi"] < cfg.rsi_oversold)
+    macd_ok = (df_row.get("macd") is not None) and (df_row.get("macd_signal") is not None) and (df_row["macd"] > df_row["macd_signal"])
+    vol_ok = vol_mult_value is not None and float(vol_mult_value) > cfg.volume_multiple
+    above_bb = (df_row.get("bb_up") is not None) and (df_row.get("close") is not None) and (df_row["close"] > df_row["bb_up"])
+    # Triggers as used in detect_setups
+    long_meanrev = bool(rsi_ok and macd_ok and vol_ok)
+    long_momo = bool(above_bb and vol_ok)
+    trigger = "meanrev" if long_meanrev else ("momentum" if long_momo else "")
+    # Short note (first blocking reason)
+    note = ""
+    if not vol_ok: note = "volume below threshold"
+    if trigger == "" and vol_ok:
+        if not rsi_ok and not above_bb: note = "neither RSI<oversold nor close>upperBB"
+        elif not rsi_ok: note = "RSI not oversold"
+        elif not macd_ok: note = "MACD not bullish"
+        elif not above_bb: note = "not above upper band"
+    return {
+        "rsi_ok": bool(rsi_ok),
+        "macd_ok": bool(macd_ok),
+        "vol_ok": bool(vol_ok),
+        "above_bb": bool(above_bb),
+        "trigger": trigger,
+        "note": note,
+    }
