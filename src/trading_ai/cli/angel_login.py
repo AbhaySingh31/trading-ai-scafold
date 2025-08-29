@@ -24,7 +24,7 @@ def main():
         otp = pyotp.TOTP(args.totp_secret).now()
 
     try:
-        from smartapi import SmartConnect
+        from SmartApi import SmartConnect
     except ImportError:
         raise SystemExit("Install Angel SmartAPI: pip install smartapi-python")
 

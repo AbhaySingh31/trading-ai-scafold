@@ -65,6 +65,11 @@ def _agg_to_df(candles) -> pd.DataFrame:
 
 
 def main() -> None:
+    DEFAULT_INSTRUMENTS = {
+    "NIFTY": {"exchangeType": 1, "token": "26000"},
+    "BANKNIFTY": {"exchangeType": 1, "token": "26009"},
+    }
+
     ap = argparse.ArgumentParser(
         description="Live 30s loop (Angel One): WS -> 5m -> signal -> print/log (+ optional option premium)"
     )
@@ -73,12 +78,16 @@ def main() -> None:
     ap.add_argument("--client-code", required=True, help="Angel client code (user id)")
     ap.add_argument("--jwt-token", required=True, help="JWT from login helper")
     ap.add_argument("--feed-token", required=True, help="Feed token from login helper")
+    # ap.add_argument(
+    #     "--instruments",
+    #     required=True,
+    #     help='JSON map: {"NIFTY":{"exchangeType":1,"token":"26000"},"BANKNIFTY":{"exchangeType":1,"token":"26009"}}',
+    # )
     ap.add_argument(
-        "--instruments",
-        required=True,
-        help='JSON map: {"NIFTY":{"exchangeType":1,"token":"26000"},"BANKNIFTY":{"exchangeType":1,"token":"26009"}}',
+    "--instruments",
+    default=json.dumps(DEFAULT_INSTRUMENTS),
+    help="JSON map of instruments (default = NIFTY/BANKNIFTY)"
     )
-
     # ---- Symbols / loop ----
     ap.add_argument("--symbols", default="NIFTY,BANKNIFTY", help="Comma list of underlyings to watch")
     ap.add_argument("--interval", type=int, default=30, help="Loop interval seconds (30 is fine)")
