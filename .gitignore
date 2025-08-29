@@ -5,5 +5,8 @@
 *.json
 angel_test.py
 angel_ws_test.py
-logs/2025-08-29/app.log
-logs/2025-08-29/app.log
+out/tokens.json
+.env
+app.log
+/logs/*
+logs/*
