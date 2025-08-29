@@ -78,11 +78,6 @@ def main() -> None:
     ap.add_argument("--client-code", required=True, help="Angel client code (user id)")
     ap.add_argument("--jwt-token", required=True, help="JWT from login helper")
     ap.add_argument("--feed-token", required=True, help="Feed token from login helper")
-    # ap.add_argument(
-    #     "--instruments",
-    #     required=True,
-    #     help='JSON map: {"NIFTY":{"exchangeType":1,"token":"26000"},"BANKNIFTY":{"exchangeType":1,"token":"26009"}}',
-    # )
     ap.add_argument(
     "--instruments",
     default=json.dumps(DEFAULT_INSTRUMENTS),
