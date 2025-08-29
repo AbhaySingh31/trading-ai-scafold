@@ -1,102 +1,112 @@
-# scripts/fetch_hist.ps1
-param(
-  [string]$EnvPath = ".env"
-)
+param()
 
 $ErrorActionPreference = "Stop"
-$root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+
+# --- repo root (parent of the scripts folder) ---
+$scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$root      = Split-Path -Parent $scriptDir
 Set-Location $root
+
+# Ensure Python can import from ./src when using -m
+$env:PYTHONPATH = "$root\src;$env:PYTHONPATH"
 
 function Load-DotEnv($path) {
   $map = @{}
   if (Test-Path $path) {
-    foreach ($line in Get-Content $path) {
-      $s = $line.Trim()
-      if ($s -match "^\s*#" -or $s -eq "") { continue }
-      if ($s -match "^\s*([^=]+)\s*=\s*(.*)\s*$") {
-        $k = $Matches[1].Trim()
-        $v = $Matches[2].Trim()
-        # strip inline comments at end
-        if ($v -match "^(.*?)(\s+#.*)$") { $v = $Matches[1].Trim() }
-        $map[$k] = $v
+    # Force UTF-8; trim whitespace; strip inline "  # comment"
+    foreach ($line in Get-Content -Path $path -Encoding UTF8) {
+      if ($line -match "^\s*#" -or $line.Trim() -eq "") { continue }
+      if ($line -match "^\s*([^=]+)\s*=\s*(.*)\s*$") {
+        $key = $Matches[1].Trim()
+        $val = $Matches[2]
+        if ($val -match "^(.*?)(\s+#.*)?$") { $val = $Matches[1] }
+        $val = $val.Trim().Trim("`"","'")
+        $map[$key] = $val
       }
     }
   }
   return $map
 }
 
-$cfg = Load-DotEnv $EnvPath
-function GetOrDefault($k,$d){ if ($cfg.ContainsKey($k)) { $cfg[$k] } else { $d } }
-
-# Credentials & window
-$API   = GetOrDefault "ANGEL_API_KEY" ""
-$CODE  = GetOrDefault "ANGEL_CLIENT_CODE" ""
-$MPIN  = GetOrDefault "ANGEL_MPIN" ""
-$TOTP  = GetOrDefault "ANGEL_TOTP_SECRET" ""
-$FROM  = GetOrDefault "HIST_FROM" ""
-$TO    = GetOrDefault "HIST_TO" ""
-
-if (-not $API -or -not $CODE -or -not $MPIN -or -not $TOTP -or -not $FROM -or -not $TO) {
-  throw "Missing one of ANGEL_API_KEY/ANGEL_CLIENT_CODE/ANGEL_MPIN/ANGEL_TOTP_SECRET/HIST_FROM/HIST_TO in .env"
+$cfg = Load-DotEnv (Join-Path $root ".env")
+Write-Host "[env] Loaded $($cfg.Count) keys from $((Join-Path $root '.env'))"
+foreach ($k in @('ANGEL_API_KEY','ANGEL_CLIENT_CODE','ANGEL_MPIN','ANGEL_TOTP_SECRET')) {
+  $v = $cfg[$k]
+  if ($v) {
+    $mask = if ($v.Length -ge 6) { ($v.Substring(0,2) + "..." + $v.Substring($v.Length-2,2)) } else { "***" }
+    Write-Host ("[env] {0} = {1}" -f $k,$mask)
+  } else {
+    Write-Host ("[env] {0} = (missing)" -f $k)
+  }
 }
 
-# What to test
-$SYMS  = (GetOrDefault "SYMBOLS" "NIFTY,BANKNIFTY").Split(",") | % { $_.Trim() } | Where-Object { $_ -ne "" }
-$FAST  = GetOrDefault "INTERVAL_FAST" "1m"
-$SLOW  = GetOrDefault "INTERVAL_SLOW" "5m"
+# required creds
+$API_KEY = $cfg.ANGEL_API_KEY
+$CLIENT  = $cfg.ANGEL_CLIENT_CODE
+$MPIN    = $cfg.ANGEL_MPIN
+$TOTP    = $cfg.ANGEL_TOTP_SECRET
+if (-not $API_KEY -or -not $CLIENT -or -not $MPIN -or -not $TOTP) {
+  throw "Missing ANGEL_API_KEY / ANGEL_CLIENT_CODE / ANGEL_MPIN / ANGEL_TOTP_SECRET in .env"
+}
 
-# Strategy knobs
-$VOL_F = [double](GetOrDefault "VOLUME_MULTIPLE_FAST" "0.0")
-$VOL_S = [double](GetOrDefault "VOLUME_MULTIPLE_SLOW" "0.0")
-$COOL  = [int](GetOrDefault "COOLDOWN_BARS" "10")
-$RSI   = [double](GetOrDefault "RSI_OVERSOLD" "30")
+# window + symbols
+$FROM = $cfg.HIST_FROM
+$TO   = $cfg.HIST_TO
+$SYMS = @()
+if ($cfg.SYMBOLS) { $SYMS = $cfg.SYMBOLS -split "," } else { $SYMS = @("NIFTY","BANKNIFTY") }
 
-# Risk
-$USE_PRESETS = (GetOrDefault "USE_PRESETS" "true").ToLower() -eq "true"
-$TICK  = [double](GetOrDefault "TICK_SIZE" "0.05")
-$RISK  = [double](GetOrDefault "RISK_PCT" "0.005")
-$PTVAL = [double](GetOrDefault "POINT_VALUE" "1")
-$CAP   = [double](GetOrDefault "CAPITAL" "1000000")
+# tokens (put these in .env)
+$TOKENS = @{
+  "NIFTY"     = $cfg.NIFTY_TOKEN
+  "BANKNIFTY" = $cfg.BANKNIFTY_TOKEN
+}
 
+# intervals
+$FAST = $cfg.INTERVAL_FAST
+$SLOW = $cfg.INTERVAL_SLOW
+
+# output dirs
 New-Item -ItemType Directory -Force -Path (Join-Path $root "data") | Out-Null
-New-Item -ItemType Directory -Force -Path (Join-Path $root "out") | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $root "out")  | Out-Null
 
 foreach ($sym in $SYMS) {
-  Write-Host "=== $sym ($FROM -> $TO) ===" -ForegroundColor Cyan
+  $SYMU = $sym.Trim().ToUpper()
+  $tok = $TOKENS[$SYMU]
+  if (-not $tok) { throw "Missing token for $SYMU. Add ${SYMU}_TOKEN to .env" }
 
-  $fastCsv = "data/${sym}_${FAST}_$($FROM -replace '-','')_$($TO -replace '-','').csv"
-  $slowCsv = "data/${sym}_${SLOW}_$($FROM -replace '-','')_$($TO -replace '-','').csv"
+  Write-Host "=== $SYMU ($FROM -> $TO) ==="
 
-  # Fetch FAST
+  $fastOut = "data\$SYMU`_$FAST`_$($FROM -replace '-','')`_$($TO -replace '-','').csv"
+  $slowOut = "data\$SYMU`_$SLOW`_$($FROM -replace '-','')`_$($TO -replace '-','').csv"
+
+  # login + fetch fast
   python -m src.trading_ai.cli.angel_hist `
-    --use-env --env-path $EnvPath `
-    --symbol $sym --interval $FAST --from $FROM --to $TO --out $fastCsv
+    --use-env `
+    --symbol $SYMU `
+    --token $tok `
+    --interval $FAST `
+    --from $FROM `
+    --to $TO `
+    --out $fastOut
 
-  # Fetch SLOW
+  # login + fetch slow
   python -m src.trading_ai.cli.angel_hist `
-    --use-env --env-path $EnvPath `
-    --symbol $sym --interval $SLOW --from $FROM --to $TO --out $slowCsv
+    --use-env `
+    --symbol $SYMU `
+    --token $tok `
+    --interval $SLOW `
+    --from $FROM `
+    --to $TO `
+    --out $slowOut
 
-  # Backtest (1m filtered by 5m)
-  $sigOut = "out/signals_${sym}_${FROM}_to_${TO}.csv"
-  $trdOut = "out/trades_${sym}_${FROM}_to_${TO}.csv"
-
-  $presetFlag = if ($USE_PRESETS) { "--use-presets" } else { "" }
-
-  python -m src.trading_ai.cli.mtf_backtest `
-    --symbol $sym `
-    --data-fast $fastCsv --timeframe-fast $FAST `
-    --data-slow $slowCsv --timeframe-slow $SLOW `
-    --rsi-oversold $RSI `
-    --volume-multiple-fast $VOL_F `
-    --volume-multiple-slow $VOL_S `
-    --cooldown $COOL `
-    --simulate $presetFlag `
-    --tick-size $TICK `
-    --risk-pct $RISK `
-    --point-value $PTVAL `
-    --capital $CAP `
-    --out-signals $sigOut `
-    --out-trades $trdOut
+  # Run MTF backtest runner (call the file directly to avoid -m path quirks)
+  python "src\trading_ai\cli\mtf_backtest.py" `
+    --symbol $SYMU `
+    --fast-csv $fastOut `
+    --slow-csv $slowOut `
+    --use-presets `
+    --out-signals ("out\signals_{0}_{1}_to_{2}.csv" -f $SYMU,$FROM,$TO) `
+    --out-trades  ("out\trades_{0}_{1}_to_{2}.csv"  -f $SYMU,$FROM,$TO)
 }
-Write-Host "All done. See /out for results." -ForegroundColor Green
+
+Write-Host "All done. See /out for results."

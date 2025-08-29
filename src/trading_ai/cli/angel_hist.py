@@ -1,282 +1,187 @@
-# src/trading_ai/cli/angel_hist.py
+# -*- coding: utf-8 -*-
+"""
+Fetch Angel One historical candles for a symbol/token and write CSV with IST timestamps.
+
+Usage (either pass --token or put <SYMBOL>_TOKEN in .env):
+  python -m src.trading_ai.cli.angel_hist ^
+    --use-env ^
+    --symbol NIFTY --interval 1m ^
+    --from 25-08-2025 --to 29-08-2025 ^
+    --out data/NIFTY_1m_25082025_29082025.csv
+
+.env keys (examples):
+  ANGEL_API_KEY=...
+  ANGEL_CLIENT_CODE=...
+  ANGEL_MPIN=...
+  ANGEL_TOTP_SECRET=...
+  NIFTY_TOKEN=99926000
+  BANKNIFTY_TOKEN=99926009
+"""
 from __future__ import annotations
-import argparse, sys, os, re
-from dataclasses import dataclass
-from datetime import datetime, date, time, timedelta, timezone
-from zoneinfo import ZoneInfo
-from typing import List, Dict, Any, Optional
 
-try:
-    from SmartApi import SmartConnect  # Angel One SDK (smartapi-python)
-except ImportError:
-    print("Install Angel SmartAPI: pip install smartapi-python", file=sys.stderr)
-    raise
+import argparse
+import re
+from datetime import date, datetime, timedelta
+from typing import List, Any
+import pandas as pd
 
-try:
-    import pyotp
-except Exception:
-    pyotp = None
 
-IST = ZoneInfo("Asia/Kolkata")
-UTC = ZoneInfo("UTC")
-
-# Angel index tokens (hist endpoint accepts these index tokens)
-INDEX_TOKENS = {
-    "NIFTY": "99926000",
-    "BANKNIFTY": "99926009",
-}
-
-INTERVAL_MAP = {
-    "1m":  "ONE_MINUTE",
-    "3m":  "THREE_MINUTE",
-    "5m":  "FIVE_MINUTE",
-    "10m": "TEN_MINUTE",
-    "15m": "FIFTEEN_MINUTE",
-    "30m": "THIRTY_MINUTE",
-    "60m": "ONE_HOUR",
-    "day": "ONE_DAY",
-}
-
+# ---------- .env loader (supports inline "# comments") ----------
 def load_env(path: str) -> dict:
-    """Read simple KEY=VALUE lines, ignore blank lines and lines starting with #.
-    Also supports inline comments after the value like: VALUE   # note
-    """
-    m: dict[str, str] = {}
-    if not os.path.exists(path):
-        return m
-    with open(path, "r", encoding="utf-8") as f:
-        for raw in f:
-            s = raw.strip()
-            if not s or s.startswith("#"):
+    env = {}
+    with open(path, "r", encoding="utf-8") as fh:
+        for raw in fh:
+            line = raw.strip()
+            if not line or line.startswith("#"):
                 continue
-            if "=" not in s:
+            if "=" not in line:
                 continue
-            k, v = s.split("=", 1)
-            k = k.strip()
-            v = v.strip()
-            # strip inline comment that follows whitespace + '#'
-            if " #" in v or v.endswith("#"):
-                v = re.split(r"\s+#", v, 1)[0].strip()
-            # remove surrounding quotes if present
-            if (len(v) >= 2) and ((v[0] == v[-1]) and v[0] in ("'", '"')):
-                v = v[1:-1]
-            m[k] = v
-    return m
+            k, v = line.split("=", 1)
+            # strip inline comments after '#'
+            v = re.split(r"\s+#", v, maxsplit=1)[0].strip()
+            env[k.strip()] = v
+    return env
 
 
-def env_get(env: dict, key: str, default: Optional[str] = None) -> Optional[str]:
-    for cand in (key.upper(), f"ANGEL_{key.upper()}"):
-        if cand in env and env[cand]:
-            return env[cand]
-    return default
-
-@dataclass
-class FetchArgs:
-    api_key: str
-    client_code: str
-    mpin: str
-    totp_secret: Optional[str]
-    otp: Optional[str]
-    symbol: str
-    token: Optional[str]
-    interval: str
-    from_date: str
-    to_date: str
-    out: Optional[str]
-
-def parse_ist(dmy: str) -> date:
-    return datetime.strptime(dmy, "%d-%m-%Y").date()
-
-def daterange(d0: date, d1: date):
-    cur = d0
-    while cur <= d1:
-        yield cur
-        cur += timedelta(days=1)
-
-def fmt_out_path(symbol: str, interval: str, d0: date, d1: date) -> str:
-    a = d0.strftime("%Y%m%d"); b = d1.strftime("%Y%m%d")
-    return f"data/{symbol}_{interval}_{a}_{b}.csv"
-
-def login(api_key: str, client_code: str, mpin: str, totp_secret: Optional[str], otp: Optional[str]) -> SmartConnect:
-    if not otp:
-        if not totp_secret:
-            raise SystemExit("Provide --otp or --totp-secret")
-        if pyotp is None:
-            raise SystemExit("Install pyotp for TOTP: pip install pyotp")
-        try:
-            otp = pyotp.TOTP(totp_secret).now()
-        except Exception as e:
-            raise SystemExit(f"TOTP error: {e}")
-
-    sc = SmartConnect(api_key=api_key)
-    resp = sc.generateSession(client_code, mpin, otp)
-    if not resp or not resp.get("status"):
-        raise SystemExit(f"Login failed: {resp}")
-    return sc
-
-def parse_ts_any(s: Any) -> datetime:
-    """
-    Accepts:
-      - 'YYYY-mm-dd HH:MM:SS'
-      - 'YYYY-mm-dd HH:MM:SS.fff'
-      - ISO-8601 'YYYY-mm-ddTHH:MM:SS' with or without timezone, e.g. '+05:30'
-      - int/float epoch seconds or ms
-    Returns tz-aware IST datetime.
-    """
-    if isinstance(s, (int, float)):
-        # Guess ms vs sec
-        if s > 1e12:
-            dt = datetime.fromtimestamp(s / 1000.0, tz=IST)
-        else:
-            dt = datetime.fromtimestamp(s, tz=IST)
-        return dt
-
-    if not isinstance(s, str):
-        raise ValueError(f"Unsupported timestamp type: {type(s)}")
-
-    # Try ISO first (handles '+05:30', 'Z', etc.)
-    try:
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=IST)  # assume IST if no tz
-        return dt.astimezone(IST)
-    except Exception:
-        pass
-
-    # Try space format
-    for fmt in ("%Y-%m-%d %H:%M:%S.%f", "%Y-%m-%d %H:%M:%S"):
-        try:
-            return datetime.strptime(s, fmt).replace(tzinfo=IST)
-        except Exception:
-            continue
-
-    # Last resort: strip trailing timezone if present like '+05:30'
-    m = re.match(r"^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})(?:\.\d+)?(?:[+-]\d{2}:\d{2})?$", s)
-    if m:
-        return datetime.strptime(f"{m.group(1)} {m.group(2)}", "%Y-%m-%d %H:%M:%S").replace(tzinfo=IST)
-
-    raise ValueError(f"Unrecognized timestamp format: {s}")
-
-def fetch_day(sc: SmartConnect, symboltoken: str, interval_key: str, day: date) -> List[List[Any]]:
-    """Return a list of [ts, o, h, l, c, v] for the given day/interval."""
-    if interval_key not in INTERVAL_MAP:
-        raise SystemExit(f"Unsupported interval '{interval_key}'. Use one of {list(INTERVAL_MAP.keys())}")
-
-    start_ist = datetime.combine(day, time(9, 15), IST)
-    end_ist   = datetime.combine(day, time(15, 30), IST)
-
-    payload = {
-        "exchange": "NSE",
-        "symboltoken": symboltoken,
-        "interval": INTERVAL_MAP[interval_key],
-        "fromdate": start_ist.strftime("%Y-%m-%d %H:%M"),
-        "todate":   end_ist.strftime("%Y-%m-%d %H:%M"),
+# ---------- interval mapping ----------
+def to_api_interval(s: str) -> str:
+    x = (s or "").strip().lower()
+    mp = {
+        "1m": "ONE_MINUTE",
+        "one_minute": "ONE_MINUTE",
+        "5m": "FIVE_MINUTE",
+        "five_minute": "FIVE_MINUTE",
+        "15m": "FIFTEEN_MINUTE",
+        "30m": "THIRTY_MINUTE",
+        "60m": "ONE_HOUR",
+        "1h": "ONE_HOUR",
+        "day": "ONE_DAY",
+        "1d": "ONE_DAY",
     }
-    out = sc.getCandleData(payload)
+    return mp.get(x, "ONE_MINUTE")
 
-    # Normalize Angel's variable shapes:
-    # - dict: {"status":true,"data":{"candles":[...]}}
-    # - dict: {"status":true,"data":[...]}
-    # - dict: {"data":[...]}
-    # - list: [...]
-    raw = out
-    candles: List[List[Any]] = []
-    try:
-        if isinstance(raw, list):
-            candles = raw
-        elif isinstance(raw, dict):
-            data = raw.get("data", raw)
-            if isinstance(data, list):
-                candles = data
-            elif isinstance(data, dict):
-                candles = data.get("candles") or data.get("data") or []
-            else:
-                candles = []
-        else:
-            candles = []
-    except Exception:
-        candles = []
 
-    if not candles:
-        msg = raw.get("message") if isinstance(raw, dict) else str(type(raw))
-        print(f"[warn] getCandleData empty for {day}: {msg}", file=sys.stderr)
+# ---------- parse Angel candle timestamp to IST ----------
+def to_ist(ts: Any) -> pd.Timestamp:
+    # Angel often returns ISO8601 with +05:30. Parse to UTC then convert to IST.
+    t = pd.to_datetime(ts, errors="coerce", utc=True)
+    # if parse returned NaT, try as naive IST
+    if pd.isna(t):
+        t = pd.to_datetime(ts, errors="coerce").tz_localize("Asia/Kolkata")
+    else:
+        t = t.tz_convert("Asia/Kolkata")
+    return t
 
-    return candles
 
-def write_csv(rows: List[Dict[str, Any]], out_path: str):
-    from pathlib import Path
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    import csv
-    with open(out_path, "w", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["timestamp","open","high","low","close","volume"])
-        for r in rows:
-            w.writerow([r["timestamp"], r["open"], r["high"], r["low"], r["close"], r["volume"]])
-    print(f"[ok] {len(rows)} rows -> {out_path}")
+# ---------- fetch one trading day's candles ----------
+def fetch_day(sc, token: str, api_interval: str, d: date) -> List[list]:
+    # Angel expects "YYYY-MM-DD HH:MM" (no timezone info)
+    from_str = f"{d:%Y-%m-%d} 09:15"
+    to_str = f"{d:%Y-%m-%d} 15:30"
+    req = {
+        "exchange": "NSE",
+        "symboltoken": token,
+        "interval": api_interval,
+        "fromdate": from_str,
+        "todate": to_str,
+    }
+    data = sc.getCandleData(req)
+
+    if not data or not data.get("status"):
+        print(f"[warn] getCandleData failed: {data}")
+        return []
+
+    # Expected: {"status":True,"message":"SUCCESS","data":{"candles":[[ts,o,h,l,c,v],...]}}
+    payload = data.get("data")
+    if isinstance(payload, dict):
+        arr = payload.get("candles") or []
+    elif isinstance(payload, list):
+        arr = payload
+    else:
+        arr = []
+
+    if not arr:
+        print(f"[warn] getCandleData empty for {d}: {data.get('message','SUCCESS')}")
+        return []
+
+    out = []
+    for row in arr:
+        # row should be [ts, open, high, low, close, volume]
+        ist = to_ist(row[0])
+        out.append([ist, row[1], row[2], row[3], row[4], row[5]])
+    return out
+
 
 def main():
-    ap = argparse.ArgumentParser(description="Fetch Angel One historical OHLC for NIFTY/BANKNIFTY in a date range.")
-    ap.add_argument("--use-env", action="store_true", help="Read credentials/dates from .env")
+    ap = argparse.ArgumentParser(description="Angel One historical candle fetcher (CSV in IST).")
+    ap.add_argument("--use-env", action="store_true", help="Read login creds and tokens from .env")
     ap.add_argument("--env-path", default=".env")
-    ap.add_argument("--api-key"); ap.add_argument("--client-code"); ap.add_argument("--mpin")
-    ap.add_argument("--totp-secret"); ap.add_argument("--otp")
-    ap.add_argument("--symbol", choices=["NIFTY","BANKNIFTY"])
-    ap.add_argument("--token")
-    ap.add_argument("--interval", default="5m", choices=list(INTERVAL_MAP.keys()))
-    ap.add_argument("--from", dest="from_date")
-    ap.add_argument("--to", dest="to_date")
-    ap.add_argument("--out")
+    ap.add_argument("--symbol", required=True, help="Friendly symbol (e.g., NIFTY or BANKNIFTY)")
+    ap.add_argument("--token", help="Angel symbol token (e.g., 99926000). If omitted, reads <SYMBOL>_TOKEN from .env")
+    ap.add_argument("--interval", required=True, help="1m / 5m / 15m / 30m / 60m / 1d")
+    ap.add_argument("--from", dest="dfrom", required=True, help="dd-mm-yyyy")
+    ap.add_argument("--to", dest="dto", required=True, help="dd-mm-yyyy")
+    ap.add_argument("--out", required=True, help="CSV output path")
+    # Optional direct creds (if not using --use-env)
+    ap.add_argument("--api-key")
+    ap.add_argument("--client-code")
+    ap.add_argument("--mpin")
+    ap.add_argument("--totp-secret")
+    ap.add_argument("--otp")
     args = ap.parse_args()
 
     env = load_env(args.env_path) if args.use_env else {}
 
-    api_key = args.api_key or env_get(env, "api_key")
-    client_code = args.client_code or env_get(env, "client_code")
-    mpin = args.mpin or env_get(env, "mpin")
-    totp_secret = args.totp_secret or env_get(env, "totp_secret")
+    api_key = args.api_key or env.get("ANGEL_API_KEY", "")
+    client = args.client_code or env.get("ANGEL_CLIENT_CODE", "")
+    mpin = args.mpin or env.get("ANGEL_MPIN", "")
+    totp_secret = args.totp_secret or env.get("ANGEL_TOTP_SECRET")
     otp = args.otp
+    if not otp and totp_secret:
+        try:
+            import pyotp
+            otp = pyotp.TOTP(totp_secret).now()
+        except Exception as e:
+            raise SystemExit(f"TOTP error: {e}")
 
-    symbol = args.symbol
-    token = args.token
-    interval = args.interval
-    from_date = args.from_date or env.get("HIST_FROM")
-    to_date   = args.to_date   or env.get("HIST_TO")
-
-    if not (api_key and client_code and mpin and (totp_secret or otp)):
+    if not api_key or not client or not mpin or not (otp or totp_secret):
         raise SystemExit("Missing api/client/mpin/totp (or otp). Tip: use --use-env with a filled .env")
-    if not (symbol and from_date and to_date):
-        raise SystemExit("Missing symbol/from/to. Tip: set SYMBOLS, HIST_FROM, HIST_TO in .env or pass flags.")
 
-    token = token or INDEX_TOKENS.get(symbol)
+    # token: from arg OR from .env <SYMBOL>_TOKEN (e.g. NIFTY_TOKEN)
+    token = args.token
+    if not token and env:
+        token_key = f"{args.symbol.upper()}_TOKEN"
+        token = env.get(token_key)
     if not token:
-        raise SystemExit(f"No token known for {symbol}. Provide --token.")
+        raise SystemExit(f"--token missing and {args.symbol.upper()}_TOKEN not found in .env")
 
-    d0 = parse_ist(from_date); d1 = parse_ist(to_date)
-    sc = login(api_key, client_code, mpin, totp_secret, otp)
+    api_interval = to_api_interval(args.interval)
+    print(f"[info] API interval = {api_interval} for '{args.interval}'")
 
-    all_rows = []
-    for day in daterange(d0, d1):
-        for c in fetch_day(sc, token, interval, day):
-            # c = [ ts, open, high, low, close, volume ]
-            ts_local = parse_ts_any(c[0])      # tz-aware IST
-            ts_utc = ts_local.astimezone(UTC)  # normalize to UTC for our pipeline
+    from SmartApi import SmartConnect
+    sc = SmartConnect(api_key=api_key)
+    login = sc.generateSession(client, mpin, otp)
+    if not login or not login.get("status"):
+        raise SystemExit(f"Login failed: {login}")
 
-            # robust volume parsing
-            vol = c[5] if len(c) > 5 else 0
-            try:
-                v = int(float(vol))
-            except Exception:
-                v = 0
+    start = datetime.strptime(args.dfrom, "%d-%m-%Y").date()
+    end = datetime.strptime(args.dto, "%d-%m-%Y").date()
 
-            all_rows.append({
-                "timestamp": ts_utc.isoformat().replace("+00:00", "Z"),
-                "open": float(c[1]), "high": float(c[2]), "low": float(c[3]), "close": float(c[4]),
-                "volume": v
-            })
+    rows: List[list] = []
+    d = start
+    while d <= end:
+        rows.extend(fetch_day(sc, token, api_interval, d))
+        d += timedelta(days=1)
 
-    out_path = args.out or fmt_out_path(symbol, interval, d0, d1)
-    write_csv(all_rows, out_path)
-    print(f"Next: {symbol} {interval} CSV ready -> {out_path}")
+    df = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+    if not df.empty:
+        for col in ("open", "high", "low", "close", "volume"):
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.sort_values("timestamp")
+    df.to_csv(args.out, index=False)
+    print(f"[ok] {len(df)} rows -> {args.out}")
+
 
 if __name__ == "__main__":
     main()
