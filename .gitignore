@@ -3,3 +3,5 @@
 .csv
 *.csv
 *.json
+angel_test.py
+angel_ws_test.py
