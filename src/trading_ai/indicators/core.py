@@ -26,6 +26,33 @@ def add_atr(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     tr = pd.concat([high-low, (high-prev_close).abs(), (low-prev_close).abs()], axis=1).max(axis=1)
     df["atr"] = tr.rolling(period).mean(); return df
 def add_vwap(df: pd.DataFrame) -> pd.DataFrame:
-    ts = pd.to_datetime(df["timestamp"], utc=True); day = ts.dt.tz_convert("Asia/Kolkata").dt.date
-    tp = (df["high"] + df["low"] + df["close"]) / 3.0; v = df["volume"].astype(float)
-    df["vwap"] = (tp*v).groupby(day).cumsum() / v.groupby(day).cumsum(); return df
+    # Create the column even if empty to keep downstream code happy
+    if df is None or df.empty:
+        df["vwap"] = np.nan
+        return df
+
+    # Force numeric types; index volumes are often blank -> 0
+    for c in ("open","high","low","close","volume"):
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    df[["open","high","low","close"]] = df[["open","high","low","close"]].ffill()
+    if "volume" in df.columns:
+        df["volume"] = df["volume"].fillna(0)
+
+    # Need a datetime column named 'timestamp'
+    if "timestamp" not in df.columns:
+        raise ValueError("DataFrame must have a 'timestamp' column (datetime64[ns, tz])")
+
+    # Day-wise cumulative typical price * volume
+    day = df["timestamp"].dt.date
+    tp = (df["high"] + df["low"] + df["close"]) / 3.0
+    v  = df["volume"].astype(float)
+
+    denom = v.groupby(day).cumsum()
+    numer = (tp * v).groupby(day).cumsum()
+
+    # Avoid divide-by-zero on days with all-zero volumes (common on indices)
+    denom = denom.replace(0, np.nan)
+    df["vwap"] = (numer / denom).ffill()
+
+    return df

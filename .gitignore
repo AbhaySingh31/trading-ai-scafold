@@ -10,3 +10,4 @@ out/tokens.json
 app.log
 /logs/*
 logs/*
+logs\*
